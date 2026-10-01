@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Scheduler 執行流程</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --page: light-dark(#f5f7fa, #10151d);
+      --panel: light-dark(#fff, #171e28);
+      --soft: light-dark(#eef2f7, #202a37);
+      --ink: light-dark(#1c2735, #edf2f8);
+      --muted: light-dark(#536477, #aab8c9);
+      --line: light-dark(#c7d1dd, #39485a);
+      --blue: light-dark(#dcecff, #183556);
+      --blue-ink: light-dark(#14477d, #a9d0ff);
+      --green: light-dark(#e0f4e9, #163a29);
+      --green-ink: light-dark(#17633a, #9be1b4);
+      --orange: light-dark(#fff0d8, #49331a);
+      --orange-ink: light-dark(#8a4b00, #ffd28c);
+      --purple: light-dark(#eee7ff, #352655);
+      --purple-ink: light-dark(#563a99, #c7b4ff);
+      --red: light-dark(#ffe5e3, #4a2424);
+      --red-ink: light-dark(#9a3028, #ffaaa3);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: var(--ink);
+      background: var(--page);
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--page); color: var(--ink); line-height: 1.55; }
+    code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; overflow-wrap: anywhere; }
+    .page { width: min(1040px, calc(100% - 32px)); margin: auto; padding: 32px 0 56px; }
+    h1 { margin: 0; font-size: clamp(28px, 4vw, 40px); }
+    h2 { margin: 0 0 14px; font-size: 22px; }
+    p { margin: 8px 0; }
+    .muted { color: var(--muted); }
+    .panel { margin: 20px 0; padding: 20px; border: 1px solid var(--line); border-radius: 16px; background: var(--panel); }
+    .intro { max-width: 780px; color: var(--muted); font-size: 17px; }
+    .note { padding: 12px 14px; border-radius: 12px; background: var(--orange); color: var(--orange-ink); }
+    .flow { display: grid; justify-items: center; gap: 7px; max-width: 790px; margin: 18px auto; }
+    .box { width: 100%; padding: 13px 16px; border-radius: 12px; background: var(--soft); border: 1px solid var(--line); }
+    .box strong { display: block; }
+    .box.blue { background: var(--blue); color: var(--blue-ink); border-color: transparent; }
+    .box.green { background: var(--green); color: var(--green-ink); border-color: transparent; }
+    .box.orange { background: var(--orange); color: var(--orange-ink); border-color: transparent; }
+    .box.purple { background: var(--purple); color: var(--purple-ink); border-color: transparent; }
+    .arrow { color: var(--muted); font-size: 22px; line-height: 1; }
+    .split { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; width: 100%; }
+    .split .box { height: 100%; }
+    .step { padding: 12px 14px; margin: 8px 0; border-radius: 11px; background: var(--soft); }
+    .step b { display: block; }
+    pre { margin: 12px 0; padding: 14px; border-radius: 11px; overflow-x: auto; background: light-dark(#f1f4f8, #0d1219); }
+    .chain { padding: 12px 14px; border-radius: 11px; background: light-dark(#f1f4f8, #0d1219); overflow-wrap: anywhere; }
+    .state { display: flex; justify-content: center; align-items: center; flex-wrap: wrap; gap: 8px; margin: 14px 0; }
+    .state span { padding: 7px 10px; border-radius: 9px; background: var(--soft); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .state .pending { background: var(--blue); color: var(--blue-ink); }
+    .state .processing { background: var(--orange); color: var(--orange-ink); }
+    .state .publishing { background: var(--purple); color: var(--purple-ink); }
+    .state .success { background: var(--green); color: var(--green-ink); }
+    .state .failure { background: var(--red); color: var(--red-ink); }
+    footer { margin-top: 26px; color: var(--muted); font-size: 13px; }
+    @media (max-width: 680px) {
+      .page { width: calc(100% - 22px); padding-top: 22px; }
+      .panel { padding: 15px; }
+      .split { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+<main class="page">
+  <header>
+    <h1>Scheduler 執行流程</h1>
+    <p class="intro">MySQL 保存任務狀態。Scheduler 取到期任務、發布至 RocketMQ，並在程序重啟後回收過期 lease。</p>
+    <p class="note"><strong>核心：</strong>首次發布每批最多 50 筆；重試逐筆處理。MQ 發布不是和 MySQL 同一筆交易，可能重複投遞；最多三次逐筆重試，耗盡後進入 <code>FAILED</code>。</p>
+  </header>
+
+  <section class="panel">
+    <h2>1. Scheduler 主循環</h2>
+    <div class="flow" role="img" aria-label="Scheduler recovery、drain 任務、計算下次喚醒時間，等待通知或逾時後循環。">
+      <div class="box blue"><strong>Spring 啟動排程執行緒</strong><code>DynamicScheduler.start() → runLoop()</code></div>
+      <div class="arrow" aria-hidden="true">↓</div>
+      <div class="box"><strong>先記下喚醒版本，再取得現在時間</strong><code>SchedulerWakeup.generation()</code>；本輪固定 cutoff</div>
+      <div class="arrow" aria-hidden="true">↓</div>
+      <div class="box orange"><strong>回收過期 lease</strong><code>TaskRecoveryService.recoverExpiredLeases(now)</code><br><code>PROCESSING → PENDING</code>；<code>PUBLISHING → PUBLISH_RETRY_WAIT</code> 或 <code>FAILED</code></div>
+      <div class="arrow" aria-hidden="true">↓</div>
+      <div class="split">
+        <div class="box blue"><strong>首次發布：批次直到沒有到期任務</strong><code>drainPending()</code><br>每批最多 <code>scheduler.batch-size</code>（預設 50）</div>
+        <div class="box purple"><strong>重試：逐筆直到沒有到期任務</strong><code>drainRetries()</code><br>每次 claim / send 1 筆</div>
+      </div>
+      <div class="arrow" aria-hidden="true">↓</div>
+      <div class="box"><strong>查下一個喚醒時間</strong><code>TaskRepository.findNextWakeAt()</code><br>取 PENDING 的 <code>run_timestamp</code>、重試的 <code>next_attempt_at</code>、PROCESSING / PUBLISHING 的 <code>lease_until</code> 最小值</div>
+      <div class="arrow" aria-hidden="true">↓</div>
+      <div class="box green"><strong>等待通知或逾時</strong><code>SchedulerWakeup.awaitChange(generation, wait)</code><br>等待最早到期時間，最多 <code>scheduler.max-sleep</code>（預設 30 秒）；醒來後回到本輪開頭</div>
+    </div>
+    <p class="muted">若一輪發生 RuntimeException，scheduler 記錄錯誤後等 1 秒或等通知，再重試整輪。停止時會 signal 等待中的執行緒。</p>
+  </section>
+
+  <section class="panel">
+    <h2>2. 首次發布一批任務</h2>
+    <div class="step"><b>① Claim 到期任務</b><code>TaskDispatchService.dispatchPendingBatch()</code> 呼叫 <code>JdbcTaskRepository.claimDuePendingBatch()</code>。短 transaction 內以 <code>SELECT ... FOR UPDATE SKIP LOCKED</code> 取最多 50 筆，再批次更新為 <code>PROCESSING</code> 並設定共用 lease token / expiry；transaction commit 後才繼續。</div>
+    <pre>WHERE status = 'PENDING' AND run_timestamp &lt;= :cutoff
+ORDER BY run_timestamp, id
+LIMIT :batchSize
+FOR UPDATE SKIP LOCKED</pre>
+    <div class="step"><b>② 跨過發布邊界</b><code>beginInitialPublishBatch()</code> 批次 CAS <code>PROCESSING → PUBLISHING</code>，增加 <code>publish_attempts</code> 並刷新 lease。任務進入 <code>PUBLISHING</code> 後不可再由 API 修改或取消。</div>
+    <div class="step"><b>③ 發送事件</b><code>TaskDispatchService.publishBatch()</code> 建立穩定 <code>eventId = taskId:scheduleVersion</code>。<code>RocketMqTaskMessagePublisher.publishBatch()</code> 序列化整批、按訊息大小拆分，再同步呼叫 RocketMQ；此時沒有 MySQL row lock。</div>
+    <div class="step"><b>④ 依發布結果更新狀態</b>全部 send 成功後，<code>markTriggeredBatch()</code> 以 ID、狀態、token 和 lease 條件批次設為 <code>TRIGGERED</code>。若任一子批發送失敗或結果不明，整個 scheduler batch 會批次進入重試等待或 <code>FAILED</code>；已被 Broker 收下的訊息可能重送。</div>
+    <div class="state"><span class="pending">PENDING</span><span>→</span><span class="processing">PROCESSING</span><span>→</span><span class="publishing">PUBLISHING</span><span>→</span><span class="success">TRIGGERED</span></div>
+    <p class="muted">成功、失敗或 claim 狀態改變後，程式會嘗試批次失效 Redis detail cache。Redis 只負責快取，不參與排程判斷。</p>
+  </section>
+
+  <section class="panel">
+    <h2>3. 發布失敗與程序恢復</h2>
+    <div class="split">
+      <div class="box purple"><strong>發布失敗／結果不明</strong>狀態進入 <code>PUBLISH_RETRY_WAIT</code> 時設定下一次時間，並清除 lease。到期後 <code>claimDueRetryBatch()</code> 一次只 claim 1 筆，進入 <code>PUBLISHING</code> 再發送。</div>
+      <div class="box orange"><strong>Lease 到期後回收</strong><code>PROCESSING</code> 批次回到 <code>PENDING</code>；<code>PUBLISHING</code> 批次依重試預算進入等待或 <code>FAILED</code>。Broker 可能已收件，所以恢復後可能重送同一個 eventId。</div>
+    </div>
+    <div class="step"><b>重試策略（含 lease 到期回收）</b>首次發布失敗後等 2 秒；第 1、2 次逐筆重試失敗後分別等 4、8 秒；第 3 次逐筆重試仍失敗就設為 <code>FAILED</code>。退避公式上限為 16 秒；以目前三次重試上限不會等到第 4 段。</div>
+    <div class="state"><span class="publishing">PUBLISHING</span><span>→ 失敗／lease 到期</span><span class="retry">PUBLISH_RETRY_WAIT</span><span>→ 到期重試</span><span class="publishing">PUBLISHING</span><span>→ 耗盡</span><span class="failure">FAILED</span></div>
+    <p class="muted">發送成功但 ACK 遺失，或 ACK 後 DB 更新失敗，都可能造成重複訊息。穩定 eventId 供 consumer 冪等去重；有限重試代表任務也可能以 FAILED 結束而未送達。</p>
+  </section>
+
+  <section class="panel">
+    <h2>4. 喚醒來源</h2>
+    <div class="split">
+      <div class="box blue"><strong>任務 API 變更</strong><code>TaskService.create/update/cancel()</code> 發出事件；transaction commit 後 <code>TaskCacheInvalidationListener.onScheduleChanged()</code> 呼叫 <code>SchedulerWakeup.signal()</code>。</div>
+      <div class="box green"><strong>手動喚醒</strong><code>POST /scheduler/wakeup</code> → <code>SchedulerController.wakeup()</code> → <code>SchedulerWakeup.signal()</code> → HTTP 204。</div>
+    </div>
+    <p><code>signal()</code> 增加 generation 並通知 Condition。Scheduler 在等待前比對先前記錄的 generation；若查 DB 期間收到通知，generation 會改變，Scheduler 略過睡眠並重查，避免漏掉通知。直接 SQL 寫入或其他 app instance 的通知不會喚醒此 JVM，最多由 30 秒輪詢上限發現。</p>
+  </section>
+
+  <footer>程式碼對照：<code>DynamicScheduler</code>、<code>SchedulerWakeup</code>、<code>TaskDispatchService</code>、<code>TaskRecoveryService</code>、<code>JdbcTaskRepository</code>、<code>RocketMqTaskMessagePublisher</code>、<code>TaskCacheInvalidationListener</code>、<code>SchedulerController</code>。</footer>
+</main>
+</body>
+</html>

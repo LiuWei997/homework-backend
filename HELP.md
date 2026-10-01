@@ -1,5 +1,7 @@
 # 本機開發操作說明
 
+[繁體中文](HELP.md) | [English](HELP.en.md)
+
 README.md 保留作業提供的原始題目與要求。以下列出 Makefile 的操作；Docker/local 的啟停 target 已分開，不需要設定 `MODE`。
 
 ## 初始化
