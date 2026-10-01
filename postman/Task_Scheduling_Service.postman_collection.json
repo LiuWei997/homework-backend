@@ -1,0 +1,454 @@
+{
+  "info": {
+    "_postman_id": "3f4ea866-a476-4f0b-b86a-2cd3e01f0cc1",
+    "name": "Task Scheduling Service API",
+    "description": "API flow: create, read, list, update, cancel, validation/conflict/not-found cases, and manually wake the scheduler to refresh its database scan and sleep duration.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8080"
+    },
+    {
+      "key": "taskId",
+      "value": ""
+    },
+    {
+      "key": "createExecuteAt",
+      "value": ""
+    },
+    {
+      "key": "updateExecuteAt",
+      "value": ""
+    }
+  ],
+  "item": [
+    {
+      "name": "01 - Create task",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{baseUrl}}/tasks",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"taskId\": \"{{taskId}}\",\n  \"executeAt\": \"{{createExecuteAt}}\",\n  \"payload\": { \"type\": \"postman-check\", \"target\": \"hello@example.com\" }\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      },
+      "response": [],
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "const guid = pm.variables.replaceIn(\"{{$guid}}\");",
+              "pm.collectionVariables.set(\"taskId\", \"postman-\" + guid);",
+              "pm.collectionVariables.set(\"createExecuteAt\", new Date(Date.now() + 10 * 60 * 1000).toISOString());"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"returns 201 Created\", () => pm.response.to.have.status(201));",
+              "const body = pm.response.json();",
+              "pm.test(\"returns created task as pending\", () => {",
+              "  pm.expect(body.taskId).to.eql(pm.collectionVariables.get(\"taskId\"));",
+              "  pm.expect(body.status).to.eql(\"pending\");",
+              "  pm.expect(body.payload.type).to.eql(\"postman-check\");",
+              "});",
+              "pm.test(\"Location points to the created task\", () => {",
+              "  pm.expect(pm.response.headers.get(\"Location\")).to.include(\"/tasks/\" + pm.collectionVariables.get(\"taskId\"));",
+              "});",
+              "pm.collectionVariables.set(\"initialScheduleVersion\", body.scheduleVersion);"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "02 - Get task",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{baseUrl}}/tasks/{{taskId}}"
+      },
+      "response": [],
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"returns 200 and the requested task\", () => {",
+              "  pm.response.to.have.status(200);",
+              "  pm.expect(pm.response.json().taskId).to.eql(pm.collectionVariables.get(\"taskId\"));",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "03 - List pending future tasks",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{baseUrl}}/tasks?status=pending&page=0&size=20"
+      },
+      "response": [],
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"returns a paginated response\", () => {",
+              "  pm.response.to.have.status(200);",
+              "  const body = pm.response.json();",
+              "  pm.expect(body.content).to.be.an(\"array\");",
+              "  pm.expect(body.page).to.eql(0);",
+              "  pm.expect(body.size).to.eql(20);",
+              "  pm.expect(body).to.have.property(\"totalElements\");",
+              "  pm.expect(body).to.have.property(\"totalPages\");",
+              "  pm.expect(body).to.have.property(\"hasNext\");",
+              "});",
+              "pm.test(\"includes the newly created future pending task\", () => {",
+              "  const ids = pm.response.json().content.map(task => task.taskId);",
+              "  pm.expect(ids).to.include(pm.collectionVariables.get(\"taskId\"));",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "04 - List tasks without filter",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{baseUrl}}/tasks?page=0&size=20"
+      },
+      "response": [],
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"lists tasks without a status filter\", () => {",
+              "  pm.response.to.have.status(200);",
+              "  pm.expect(pm.response.json().content).to.be.an(\"array\");",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "05 - Update task",
+      "request": {
+        "method": "PUT",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{baseUrl}}/tasks/{{taskId}}",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"executeAt\": \"{{updateExecuteAt}}\",\n  \"payload\": { \"type\": \"postman-updated\", \"target\": \"hello@example.com\" }\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      },
+      "response": [],
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.collectionVariables.set(\"updateExecuteAt\", new Date(Date.now() + 20 * 60 * 1000).toISOString());"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"returns the updated pending task\", () => {",
+              "  pm.response.to.have.status(200);",
+              "  const body = pm.response.json();",
+              "  pm.expect(body.taskId).to.eql(pm.collectionVariables.get(\"taskId\"));",
+              "  pm.expect(body.status).to.eql(\"pending\");",
+              "  pm.expect(body.payload.type).to.eql(\"postman-updated\");",
+              "  pm.expect(body.scheduleVersion).to.eql(Number(pm.collectionVariables.get(\"initialScheduleVersion\")) + 1);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "06 - Get updated task",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{baseUrl}}/tasks/{{taskId}}"
+      },
+      "response": [],
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"updated values are readable\", () => {",
+              "  pm.response.to.have.status(200);",
+              "  const body = pm.response.json();",
+              "  pm.expect(body.status).to.eql(\"pending\");",
+              "  pm.expect(body.payload.type).to.eql(\"postman-updated\");",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "07 - Cancel task",
+      "request": {
+        "method": "DELETE",
+        "header": [],
+        "url": "{{baseUrl}}/tasks/{{taskId}}"
+      },
+      "response": [],
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"cancels the task\", () => {",
+              "  pm.response.to.have.status(200);",
+              "  pm.expect(pm.response.json().status).to.eql(\"cancelled\");",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "08 - Get cancelled task",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{baseUrl}}/tasks/{{taskId}}"
+      },
+      "response": [],
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"reads the cancelled status after cache invalidation\", () => {",
+              "  pm.response.to.have.status(200);",
+              "  pm.expect(pm.response.json().status).to.eql(\"cancelled\");",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "09 - Cancel task again (409)",
+      "request": {
+        "method": "DELETE",
+        "header": [],
+        "url": "{{baseUrl}}/tasks/{{taskId}}"
+      },
+      "response": [],
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"already cancelled task cannot be cancelled again\", () => {",
+              "  pm.response.to.have.status(409);",
+              "  pm.expect(pm.response.json().code).to.eql(\"TASK_NOT_CANCELLABLE\");",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "10 - Duplicate taskId (409)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{baseUrl}}/tasks",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"taskId\": \"{{taskId}}\",\n  \"executeAt\": \"{{duplicateExecuteAt}}\",\n  \"payload\": { \"type\": \"duplicate-check\" }\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      },
+      "response": [],
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.collectionVariables.set(\"duplicateExecuteAt\", new Date(Date.now() + 10 * 60 * 1000).toISOString());"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"duplicate taskId returns 409\", () => {",
+              "  pm.response.to.have.status(409);",
+              "  pm.expect(pm.response.json().code).to.eql(\"TASK_ALREADY_EXISTS\");",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "11 - Reject past executeAt (400)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{baseUrl}}/tasks",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"taskId\": \"{{invalidTaskId}}\",\n  \"executeAt\": \"{{pastExecuteAt}}\",\n  \"payload\": { \"type\": \"invalid-time-check\" }\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      },
+      "response": [],
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.collectionVariables.set(\"invalidTaskId\", \"postman-invalid-\" + pm.variables.replaceIn(\"{{$guid}}\"));",
+              "pm.collectionVariables.set(\"pastExecuteAt\", new Date(Date.now() - 60 * 1000).toISOString());"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"past executeAt is rejected\", () => {",
+              "  pm.response.to.have.status(400);",
+              "  pm.expect(pm.response.json().code).to.eql(\"INVALID_EXECUTE_AT\");",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "12 - Unknown task (404)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{baseUrl}}/tasks/{{missingTaskId}}"
+      },
+      "response": [],
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.collectionVariables.set(\"missingTaskId\", \"postman-missing-\" + pm.variables.replaceIn(\"{{$guid}}\"));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"unknown task returns 404\", () => {",
+              "  pm.response.to.have.status(404);",
+              "  pm.expect(pm.response.json().code).to.eql(\"TASK_NOT_FOUND\");",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "13 - Wake scheduler",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "url": "{{baseUrl}}/scheduler/wakeup"
+      },
+      "response": [],
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"scheduler wakeup is accepted without a response body\", () => {",
+              "  pm.response.to.have.status(204);",
+              "  pm.expect(pm.response.text()).to.eql(\"\");",
+              "});"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}
